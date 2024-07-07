@@ -182,8 +182,8 @@ void cc1101_rf_cmode()
   //               LENGTH_CONFIG 1 - Variable packet length
   //               LENGTH_CONFIG 2 - Infinite packet length
   cc1101_check(csn, miso, spi, TI_CCxxx0_PKTCTRL0, 0x01);    
-  //RX FIFO threshold is 4 bytes
-  cc1101_check(csn, miso, spi, TI_CCxxx0_FIFOTHR, 0x00);    
+  //RX FIFO threshold is 16 bytes
+  cc1101_check(csn, miso, spi, TI_CCxxx0_FIFOTHR, 0x03);    
   //  IOCFG0[5:0] GDO0_CFG 0x01 - RX FIFO >= threshold or end of packet
   //              GDO0_CFG 0x04 - RX FIFO has overflowed
   //              GDO0_CFG 0x06 - Sync word received

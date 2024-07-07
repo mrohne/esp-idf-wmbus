@@ -1,0 +1,3 @@
+[submodule "components/wmbusmeters"]
+	path = components/wmbusmeters
+	url = git@github.com:mrohne/wmbusmeters.git

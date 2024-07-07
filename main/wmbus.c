@@ -6,8 +6,6 @@
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
 
-#include "mbedtls/aes.h"
-
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 
@@ -18,12 +16,19 @@
 #include "TI_CC_CC1100-CC2500.h"
 #include "cc1101.h"
 
+#include "esp32wmbusmeters.h"
+
 /* Sources:
  * https://github.com/espressif/esp-idf.git/examples/peripherals/spi_master
  * https://github.com/nopnop2002/esp-idf-cc1101/components/cc1101
  * http://www.ti.com/lit/zip/slaa325
  * http://www.ti.com/lit/zip/SWRA234
  */
+
+const char *wmbus_name   = CONFIG_WMBUS_NAME;
+const char *wmbus_driver = CONFIG_WMBUS_DRIVER;
+const char *wmbus_id     = CONFIG_WMBUS_ID;
+const char *wmbus_key    = CONFIG_WMBUS_KEY;
 
 #if CONFIG_SPI2_HOST
 #define SPI_HOST SPI2_HOST
@@ -41,45 +46,7 @@ spi_device_handle_t spi;
 
 static RingbufHandle_t rxring = NULL;
 
-static mbedtls_aes_context aes;
-static uint8_t key[32] = "08A8A67717B9EFE432BD660A705CDF15";
-static size_t nc_off = 0;
-static uint8_t nonce_counter[16] = {0};
-static uint8_t stream_block[16] = {0};
-
-static TaskHandle_t rxtask = NULL;
-
-void rx_task(void *ring)
-{
-  int      i;
-  uint8_t *buf;
-  uint8_t  out[0x80];
-  size_t   len;
-  ESP_LOGI(pcTaskGetName(0), "Start");
-  //Poll for data
-  for (;;) {
-    //Wait for interrupt
-    buf = xRingbufferReceive(ring, &len, portMAX_DELAY);
-    if (buf == NULL) {
-      ESP_LOGD("CC1101", "%-20s timeout", __FUNCTION__);
-      continue;
-    }
-    printf("%-20s 0x%02x bytes ","CCxxx0_RXFIFO", len);
-    for (i=0;i<len;i++) {
-      printf("%02x",buf[i]);
-    }
-    printf("\n");
-    //Return data
-    ESP_LOG_BUFFER_HEX(pcTaskGetName(0), buf, len);
-    memcpy(out, buf, 13);
-    memcpy(out+len-2, buf+len-2, 2);
-    mbedtls_aes_crypt_ctr(&aes, len-13-2, &nc_off, nonce_counter, stream_block, buf+13, out+13);
-    ESP_LOG_BUFFER_HEX(pcTaskGetName(0), out, len);    
-    vRingbufferReturnItem(ring, buf);
-  }
-  // never reach here
-  vTaskDelete(NULL);
-}
+static TaskHandle_t wmbus = NULL;
 
 void app_main(void)
 {
@@ -113,6 +80,8 @@ void app_main(void)
     .spics_io_num = csn,
     .flags = SPI_DEVICE_NO_DUMMY,
   };
+  //Create meter
+  esp32meter(wmbus_name, wmbus_driver, wmbus_id, wmbus_key);
   //Setup GPIO
   ESP_ERROR_CHECK(gpio_config(&gpi0cfg));
   ESP_ERROR_CHECK(gpio_config(&gpi2cfg));
@@ -129,11 +98,7 @@ void app_main(void)
   spi_device_release_bus(spi);
   //Ring buffer and event queue
   rxring = xRingbufferCreate(1028, RINGBUF_TYPE_NOSPLIT);
-  //AES_CTR setup
-  mbedtls_aes_init(&aes);
-  mbedtls_aes_setkey_enc(&aes, key, 256);
-  //Start RX task
-  xTaskCreate(&rx_task, "RXTASK", 1024*3, rxring, tskIDLE_PRIORITY, &rxtask);    
+  xTaskCreate(&esp32frame, "WMBUS", 1024*64, rxring, tskIDLE_PRIORITY, &wmbus);
   //Install interrupt handlers
   ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL3));
   ESP_ERROR_CHECK(gpio_isr_handler_add(gpi0, cc1101_rx_isr, rxring));

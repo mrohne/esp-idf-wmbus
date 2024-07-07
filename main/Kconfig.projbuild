@@ -1,3 +1,32 @@
+menu "WMBus Meter"
+
+    config WMBUS_NAME
+        string "Name"
+        default "**name**"
+        help
+            Parsing driver
+
+    config WMBUS_DRIVER
+        string "Driver"
+        default "flowiq2200"
+        help
+            Parsing driver
+
+    config WMBUS_ID
+        string "Identifier"
+        default "**identifier**"
+        help
+            Serial number
+
+
+    config WMBUS_KEY
+        string "Encryption Key"
+        default "**encryption**"
+        help
+            Encryption key
+
+endmenu
+
 # Lifted from https://github.com/nopnop2002/esp-idf-cc1101/components/cc1101/Kconfig.projbuild
 menu "SPI Configuration"
 
