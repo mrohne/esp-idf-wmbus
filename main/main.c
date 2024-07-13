@@ -12,6 +12,7 @@
 #define LOG_LOCAL_LEVEL ESP_LOG_INFO
 #include "esp_log.h"
 #include "esp_system.h"
+#include "nvs_flash.h"
 
 #include "TI_CC_CC1100-CC2500.h"
 #include "cc1101.h"
@@ -44,8 +45,11 @@ gpio_num_t gpi0 = CONFIG_SPI_GDO0_GPIO;
 gpio_num_t gpi2 = CONFIG_SPI_GDO2_GPIO;
 spi_device_handle_t spi;
 
-static RingbufHandle_t rxring = NULL;
+void wifi_init(void);
+void obtain_time(void);
 
+static RingbufHandle_t rxring = NULL;
+static TaskHandle_t rxtask = NULL;
 static TaskHandle_t wmbus = NULL;
 
 void app_main(void)
@@ -80,8 +84,20 @@ void app_main(void)
     .spics_io_num = csn,
     .flags = SPI_DEVICE_NO_DUMMY,
   };
+  //Init NVS
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+  //Connect to wifi, sync time
+  wifi_init();
+  obtain_time();
   //Create meter
+  rxring = xRingbufferCreate(1028, RINGBUF_TYPE_NOSPLIT);
   esp32meter(wmbus_name, wmbus_driver, wmbus_id, wmbus_key);
+  xTaskCreate(&esp32frame, "WMBUS", 1024*16, rxring, tskIDLE_PRIORITY, &wmbus);
   //Setup GPIO
   ESP_ERROR_CHECK(gpio_config(&gpi0cfg));
   ESP_ERROR_CHECK(gpio_config(&gpi2cfg));
@@ -90,23 +106,12 @@ void app_main(void)
   ESP_ERROR_CHECK(spi_bus_initialize(SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
   ESP_ERROR_CHECK(spi_bus_add_device(SPI_HOST, &devcfg, &spi));
   //Initialize and configure CC1101
-  ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
-  cc1101_init(csn, miso, spi);
-  cc1101_rf_tmode();  
-  cc1101_rf_cmode();  
-  cc1101_rx_start();
-  spi_device_release_bus(spi);
-  //Ring buffer and event queue
-  rxring = xRingbufferCreate(1028, RINGBUF_TYPE_NOSPLIT);
-  xTaskCreate(&esp32frame, "WMBUS", 1024*64, rxring, tskIDLE_PRIORITY, &wmbus);
-  //Install interrupt handlers
-  ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL3));
-  ESP_ERROR_CHECK(gpio_isr_handler_add(gpi0, cc1101_rx_isr, rxring));
-  ESP_ERROR_CHECK(gpio_isr_handler_add(gpi0, cc1101_rx_isr, rxring));
+  cc1101_setup(csn, miso, gpi0, spi);
+  xTaskCreate(&cc1101_rxtask, "CC1101", 1024*16, rxring, configMAX_PRIORITIES - 1, &rxtask);
   //Restart
-  for (int i = 100; i > 0; i--) {
-    printf("Restarting in %d seconds...\n", 20*i);
-    vTaskDelay(20000 / portTICK_PERIOD_MS);
+  for (int i = 0x10000; i > 0; i--) {
+    printf("Restarting in %d seconds...\n", 8*i);
+    vTaskDelay(8000 / portTICK_PERIOD_MS);
   }
   printf("Restarting now.\n");
   fflush(stdout);
