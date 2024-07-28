@@ -15,15 +15,17 @@
 static gpio_num_t csn = -1;
 static gpio_num_t miso = -1;
 static gpio_num_t gpi0 = -1;
+static gpio_num_t gpi2 = -1;
 static spi_device_handle_t spi = NULL;
 
 // Initialize CC1101
-void cc1101_setup(gpio_num_t csn_, gpio_num_t miso_, gpio_num_t gpi0_, spi_device_handle_t spi_)
+void cc1101_setup(gpio_num_t csn_, gpio_num_t miso_, gpio_num_t gpi0_, gpio_num_t gpi2_, spi_device_handle_t spi_)
 {
   //Set static variables
   csn  = csn_;
   miso = miso_;
   gpi0 = gpi0_;
+  gpi2 = gpi2_;
   spi  = spi_;
   //Acquire bus
   ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
@@ -46,103 +48,110 @@ void cc1101_setup(gpio_num_t csn_, gpio_num_t miso_, gpio_num_t gpi0_, spi_devic
   spi_device_release_bus(spi);
 }
 
-static spi_transaction_t txn;
-static uint8_t rxbuf[0x80];
+static uint8_t rxbuf[0x100];
 static uint8_t rxlen = 0;
 
 void IRAM_ATTR cc1101_rxisr(void *arg)
 {
-  uint8_t sts[4];
+  static spi_transaction_t txn;
   //Acquire bus
   ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
-  //Check RXFIFO
-  memset(&txn, 0, sizeof(txn));
+  //Check fifo
+  memset(&txn, 0, sizeof(spi_transaction_t));
   txn.length = 8*2;
   txn.flags |= SPI_TRANS_USE_TXDATA;
+  txn.flags |= SPI_TRANS_USE_RXDATA;
   txn.flags |= SPI_TRANS_CS_KEEP_ACTIVE;
   txn.tx_data[0] = TI_CCxxx0_RXBYTES | TI_CCxxx0_READ_BURST;
-  txn.tx_data[1] = TI_CCxxx0_RXFIFO  | TI_CCxxx0_READ_BURST;
-  txn.flags &= ~SPI_TRANS_USE_RXDATA;
-  txn.rx_buffer = sts;
   gpio_set_level(csn, 0);
   while(gpio_get_level(miso)>0);
   ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &txn));
-  /* memset(&txn, 0, sizeof(txn));   */
-  /* txn.length = 8*sts[1]; */
-  /* txn.flags &= ~SPI_TRANS_USE_TXDATA; */
-  /* txn.tx_buffer = NULL; */
-  /* txn.flags &= ~SPI_TRANS_USE_RXDATA; */
-  /* txn.rx_buffer = rxbuf+rxlen; */
-  /* ESP_ERROR_CHECK(spi_device_polling_start(spi, &txn, portMAX_DELAY)); */
+  uint8_t val = txn.rx_data[0] & 0x70; 
+  uint8_t rem = txn.rx_data[1] & 0x7f;
+  uint8_t num = (rem < (sizeof(rxbuf) - rxlen)) ? rem : (sizeof(rxbuf) - rxlen);
+  //Prepare transfer
+  memset(&txn, 0, sizeof(spi_transaction_t));
+  txn.length = 8*1;
+  txn.flags |= SPI_TRANS_USE_TXDATA;
+  txn.flags |= SPI_TRANS_USE_RXDATA;
+  txn.flags |= SPI_TRANS_CS_KEEP_ACTIVE;
+  txn.tx_data[0] = TI_CCxxx0_RXFIFO | TI_CCxxx0_READ_BURST;
+  ESP_ERROR_CHECK(spi_device_polling_transmit(spi, &txn));
   //Release bus
   spi_device_release_bus(spi);
+  //Transfer data
+  memset(&txn, 0, sizeof(spi_transaction_t));
+  txn.length = 8*num;
+  txn.tx_buffer = NULL;
+  txn.rx_buffer = rxbuf+rxlen;
+  rxlen += num;
+  ESP_ERROR_CHECK(spi_device_queue_trans(spi, &txn, portMAX_DELAY));
   //Send to rxtask
-  xQueueSendFromISR(arg, sts, NULL);
+  xQueueSendFromISR(arg, &val, NULL);
 }
 
 void cc1101_rxtask(void *ring)
 {
+  spi_transaction_t *ptr;
   //Install interrupt handlers
+  ESP_LOGI("CC1101", "%s install ISR", __FUNCTION__);
   QueueHandle_t event = xQueueCreate(5, sizeof(uint32_t));
   ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL3));
   ESP_ERROR_CHECK(gpio_isr_handler_add(gpi0, cc1101_rxisr, event));
+  //Setup HW for IRQ
+  ESP_LOGI("CC1101", "%s enable IRQ", __FUNCTION__);
   //Acquire bus
   ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
+  // MCSM1.RXOFF_MODE[3:2] 0 - RX -> IDLE after a packet has been received
+  cc1101_check(csn, miso, spi, TI_CCxxx0_MCSM1, 0x00);
+  // FIFOTHR[7:0] 0 - RX FIFO 4 bytes
+  //              3 - RX FIFO 16 bytes
+  cc1101_check(csn, miso, spi, TI_CCxxx0_FIFOTHR, 0x03);    
+  // IOCFG0[5:0] GDOn_CFG 0x00 - RX FIFO >= threshold
+  //             GDOn_CFG 0x01 - RX FIFO >= threshold or end of packet
+  //             GDOn_CFG 0x04 - RX FIFO has overflowed
+  //             GDOn_CFG 0x06 - Sync word received
+  cc1101_check(csn, miso, spi, TI_CCxxx0_IOCFG0, 0x01);
+  cc1101_check(csn, miso, spi, TI_CCxxx0_IOCFG2, 0x04);
   //Start RX mode
+  ESP_LOGI("CC1101", "%s starting RXMODE", __FUNCTION__);
   cc1101_rxmode(csn, miso, spi);
   //Release bus
   spi_device_release_bus(spi);
   //Wait for event
-  printf("(cc1101) starting %s\n", __FUNCTION__);
   for (;;) {
-    uint8_t sts[4];
-    if (!xQueueReceive(event, &sts, 120000/portTICK_PERIOD_MS)) {
+    uint8_t val;
+    if (!xQueueReceive(event, &val, 120000/portTICK_PERIOD_MS)) {
+      memset(rxbuf, 0, sizeof(rxbuf));
+      rxlen = 0;
       ESP_LOGW("CC1101", "%s xQueueReceive timeout", __FUNCTION__);
+      //Acquire bus
       ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
+      //Start RX mode
       cc1101_rxmode(csn, miso, spi);
+      //Release bus
       spi_device_release_bus(spi);
       continue;
     }
-    //Acquire bus
-    ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
-    ESP_ERROR_CHECK(spi_device_polling_end(spi, portMAX_DELAY));
-    //Chip status
-    uint8_t val;
-    //Drain FIFO
-    for (;;) {
-      uint8_t rem;
-      uint8_t num;
-      val = cc1101_read(csn, miso, spi, TI_CCxxx0_RXBYTES | TI_CCxxx0_READ_BURST, &rem);
-      rem &= 0x7f;
-      if (rem == 0) break;
-      //Read data into buffer
-      num = (rem < (sizeof(rxbuf) - rxlen)) ? rem : (sizeof(rxbuf) - rxlen);
-      if (num > 0) {
-	val = cc1101_xmit(csn, miso, spi, TI_CCxxx0_RXFIFO | TI_CCxxx0_READ_BURST, NULL, rxbuf+rxlen, num);
-	rxlen += num;
-	rem -= num;
-      }
-      //Flush remaining data
-      if (rem > 0) {
-	val = cc1101_xmit(csn, miso, spi, TI_CCxxx0_RXFIFO | TI_CCxxx0_READ_BURST, NULL, NULL, rem);
-      }
-    }
-    char str[2*rxlen+1];
-    str[0] = 0;
+    //Wait for transaction
+    ESP_ERROR_CHECK(spi_device_get_trans_result(spi, &ptr, portMAX_DELAY));
+    //Format string
+    char str[2*sizeof(rxbuf)+1];
     for (int i=0;i<rxlen;i++) {
       snprintf(str+2*i, 3, "%02x",rxbuf[i]);
     }
-    if (rxlen != (1+rxbuf[0]+2)){
-      ESP_LOGW("CC1101", "%s 0x%02x %s", __FUNCTION__, rxlen, str);
+    str[2*rxlen] = 0;
+    ESP_LOGI("CC1101", "%s 0x%02x %s", __FUNCTION__, rxlen, str);
+    //Pass data
+    if ((val & 0x70) == 0x00) {
+      if (!xRingbufferSend(ring, rxbuf, rxlen, portMAX_DELAY)) {
+	ESP_LOGW("CC1101", "%s 0x%02x %s", __FUNCTION__, rxlen, str);
+      }
+      memset(rxbuf, 0, sizeof(rxbuf));
+      rxlen = 0;
     }
-    else if (!xRingbufferSend(ring, rxbuf, rxlen, portMAX_DELAY)) {
-      ESP_LOGW("CC1101", "%s xRingbufferSend error 0x%02x %s", __FUNCTION__, rxlen, str);
-    }
-    else {
-      ESP_LOGV("CC1101", "%s xRingbufferSend success 0x%02x %s", __FUNCTION__, rxlen, str);
-    }
-    memset(rxbuf, 0, sizeof(rxbuf));
-    rxlen = 0;
+    //Acquire bus
+    ESP_ERROR_CHECK(spi_device_acquire_bus(spi, portMAX_DELAY));
     //Handle state
     switch (val & 0x70) {
     case 0x00: /* IDLE */
@@ -188,13 +197,13 @@ uint8_t cc1101_txmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi)
   uint8_t val;
   //Enter IDLE state
   do {
-    val = cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SIDLE);
+    val = cc1101_send(csn, miso, spi, TI_CCxxx0_SIDLE);
   } while ((val & 0x70) != 0x00);
   //Flush TXFIFO
-  cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SFTX);
+  cc1101_send(csn, miso, spi, TI_CCxxx0_SFTX);
   //Enter TX state
   do {
-    val = cc1101_polling_send(csn, miso, spi, TI_CCxxx0_STX);
+    val = cc1101_send(csn, miso, spi, TI_CCxxx0_STX);
   } while ((val & 0x70) != 0x20);
   return val;
 }
@@ -204,13 +213,13 @@ uint8_t cc1101_rxmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi)
   uint8_t val;
   //Enter IDLE state
   do {
-    val = cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SIDLE);
+    val = cc1101_send(csn, miso, spi, TI_CCxxx0_SIDLE);
   } while ((val & 0x70) != 0x00);
   //Flush RXFIFO
-  cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SFRX);
+  val = cc1101_send(csn, miso, spi, TI_CCxxx0_SFRX);
   //Enter RX state
   do {
-    val = cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SRX);
+    val = cc1101_send(csn, miso, spi, TI_CCxxx0_SRX);
   } while ((val & 0x70) != 0x10);
   return val;
 }
@@ -221,46 +230,36 @@ uint8_t cc1101_tmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi)
   int i;
   //Write t-mode settings
   for (i=0; i<sizeof(tModeRfConfig)/sizeof(uint8_t); i+=2) {
-    cc1101_polling_check(csn, miso, spi, tModeRfConfig[i], tModeRfConfig[i+1]);      
+    cc1101_check(csn, miso, spi, tModeRfConfig[i], tModeRfConfig[i+1]);      
   }
   //Write patable
   cc1101_xmit(csn, miso, spi, TI_CCxxx0_PATABLE | TI_CCxxx0_WRITE_BURST, tModePaTable, NULL, tModePaTableLen);
   //Return status
-  return cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SNOP);
+  return cc1101_send(csn, miso, spi, TI_CCxxx0_SNOP);
 }
 
 // C-mode setup
 uint8_t cc1101_cmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi)
 {
-  //MCSM1.RXOFF_MODE[3:2]   0 RX -> IDLE after a packet has been received
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_MCSM1, 0x00);
   //SYNC1 = 0x54
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_SYNC1, 0x54);
+  cc1101_check(csn, miso, spi, TI_CCxxx0_SYNC1, 0x54);
   //SYNC0 = 0x3D
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_SYNC0, 0x3D);
+  cc1101_check(csn, miso, spi, TI_CCxxx0_SYNC0, 0x3D);
   // MDMCFG2[2:0] SYNC_MODE 3 - 30/32 sync word bits detected
   //              SYNC_MODE 7 - 30/32 + carrier sense above threshold
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_MDMCFG2, 0x07);
+  cc1101_check(csn, miso, spi, TI_CCxxx0_MDMCFG2, 0x03);
   // PKTLEN[7:0] PACKET_LENGTH 0x80
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_PKTLEN, 0x80);    
+  cc1101_check(csn, miso, spi, TI_CCxxx0_PKTLEN, 0x80);    
   // PKTCTRL1[7:5] PQT - quality estimator
   // PKTCTRL1[2:2] APPEND_STATUS               
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_PKTCTRL1, 0x04);    
+  cc1101_check(csn, miso, spi, TI_CCxxx0_PKTCTRL1, 0x04);    
   // PKTCTRL0[2:2] CRC_EN        0 - CRC disabled
   // PKTCTRL0[1:0] LENGTH_CONFIG 0 - Fixed packet length
   //               LENGTH_CONFIG 1 - Variable packet length
   //               LENGTH_CONFIG 2 - Infinite packet length
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_PKTCTRL0, 0x01);    
-  //RX FIFO threshold is 16 bytes
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_FIFOTHR, 0x03);    
-  //  IOCFG0[5:0] GDO0_CFG 0x01 - RX FIFO >= threshold or end of packet
-  //              GDO0_CFG 0x04 - RX FIFO has overflowed
-  //              GDO0_CFG 0x06 - Sync word received
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_IOCFG0, 0x01);
-  //  IOCFG2[5:0] GDO2_CFG 0x04 - RX FIFO has overflowed
-  cc1101_polling_check(csn, miso, spi, TI_CCxxx0_IOCFG2, 0x04);
+  cc1101_check(csn, miso, spi, TI_CCxxx0_PKTCTRL0, 0x01);    
   //Return status
-  return cc1101_polling_send(csn, miso, spi, TI_CCxxx0_SNOP);
+  return cc1101_send(csn, miso, spi, TI_CCxxx0_SNOP);
 }
 
 // Interrupt transactions
@@ -363,7 +362,6 @@ uint8_t cc1101_xmit(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, ui
   ESP_ERROR_CHECK(spi_device_transmit(spi, &txn));
   return val;
 }
-
 
 // Polling transactions
 uint8_t cc1101_polling_send(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, uint8_t cmd)

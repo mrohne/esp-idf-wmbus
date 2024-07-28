@@ -106,7 +106,7 @@ void app_main(void)
   ESP_ERROR_CHECK(spi_bus_initialize(SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
   ESP_ERROR_CHECK(spi_bus_add_device(SPI_HOST, &devcfg, &spi));
   //Initialize and configure CC1101
-  cc1101_setup(csn, miso, gpi0, spi);
+  cc1101_setup(csn, miso, gpi0, gpi2, spi);
   xTaskCreate(&cc1101_rxtask, "CC1101", 1024*16, rxring, configMAX_PRIORITIES - 1, &rxtask);
   //Restart
   for (int i = 0x10000; i > 0; i--) {

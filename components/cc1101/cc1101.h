@@ -1,5 +1,5 @@
 // Initialize CC1101
-void cc1101_setup(gpio_num_t csn, gpio_num_t miso, gpio_num_t gpi0, spi_device_handle_t spi);
+void cc1101_setup(gpio_num_t csn, gpio_num_t miso, gpio_num_t gpi0, gpio_num_t gpi2, spi_device_handle_t spi);
 void cc1101_rxtask(void *ring);
 // Chip setup 
 uint8_t cc1101_tmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi);
@@ -17,3 +17,4 @@ uint8_t cc1101_xmit(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, ui
 uint8_t cc1101_polling_send(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, uint8_t cmd);
 uint8_t cc1101_polling_read(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, uint8_t cmd, uint8_t *inp);
 uint8_t cc1101_polling_check(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, uint8_t cmd, uint8_t out);
+uint8_t cc1101_polling_xmit(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, uint8_t cmd, const uint8_t *out, uint8_t *inp, size_t len);
