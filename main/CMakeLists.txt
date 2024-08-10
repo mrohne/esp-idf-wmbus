@@ -3,4 +3,4 @@ idf_component_register(SRCS
 		"wifi.c"
 		"sntp.c"
                 INCLUDE_DIRS "."
-                PRIV_REQUIRES cc1101 wmbusmeters esp_wifi nvs_flash)
+                PRIV_REQUIRES cc1101 wmbusmeters esp_wifi mqtt nvs_flash)

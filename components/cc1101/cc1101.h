@@ -1,6 +1,6 @@
 // Initialize CC1101
-void cc1101_setup(gpio_num_t csn, gpio_num_t miso, gpio_num_t gpi0, gpio_num_t gpi2, spi_device_handle_t spi);
-void cc1101_rxtask(void *ring);
+void cc1101_setup(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi, gpio_num_t gpi0, gpio_num_t gpi2);
+void cc1101_start(RingbufHandle_t ring);
 // Chip setup 
 uint8_t cc1101_tmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi);
 uint8_t cc1101_cmode(gpio_num_t csn, gpio_num_t miso, spi_device_handle_t spi);

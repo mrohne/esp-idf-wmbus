@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "mqtt_client.h"
 
 #include "TI_CC_CC1100-CC2500.h"
 #include "cc1101.h"
@@ -48,23 +49,19 @@ spi_device_handle_t spi;
 void wifi_init(void);
 void obtain_time(void);
 
-static RingbufHandle_t rxring = NULL;
-static TaskHandle_t rxtask = NULL;
-static TaskHandle_t wmbus = NULL;
-
 void app_main(void)
 {
   gpio_config_t gpi0cfg = {
     .pin_bit_mask=1ULL<<gpi0,
     .mode = GPIO_MODE_INPUT,
-    .intr_type=GPIO_INTR_POSEDGE,
-    .pull_up_en = 1,
+    .intr_type=GPIO_INTR_HIGH_LEVEL,
+    .pull_down_en = 1,
   };
   gpio_config_t gpi2cfg = {
     .pin_bit_mask=1ULL<<gpi2,
     .mode = GPIO_MODE_INPUT,
-    .intr_type=GPIO_INTR_POSEDGE,
-    .pull_up_en = 1,
+    .intr_type=GPIO_INTR_HIGH_LEVEL,
+    .pull_down_en = 1,
   };
   gpio_config_t csncfg = {
     .pin_bit_mask=1ULL<<csn,
@@ -94,10 +91,15 @@ void app_main(void)
   //Connect to wifi, sync time
   wifi_init();
   obtain_time();
+  //Init MQTT
+  esp_mqtt_client_config_t mqtt_cfg = {
+    .broker.address.uri = CONFIG_BROKER_URI,
+  };
+  esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+  ESP_ERROR_CHECK(esp_mqtt_client_start(client));
   //Create meter
-  rxring = xRingbufferCreate(1028, RINGBUF_TYPE_NOSPLIT);
   esp32meter(wmbus_name, wmbus_driver, wmbus_id, wmbus_key);
-  xTaskCreate(&esp32frame, "WMBUS", 1024*16, rxring, tskIDLE_PRIORITY, &wmbus);
+  RingbufHandle_t ring = esp32start(client);
   //Setup GPIO
   ESP_ERROR_CHECK(gpio_config(&gpi0cfg));
   ESP_ERROR_CHECK(gpio_config(&gpi2cfg));
@@ -106,11 +108,13 @@ void app_main(void)
   ESP_ERROR_CHECK(spi_bus_initialize(SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
   ESP_ERROR_CHECK(spi_bus_add_device(SPI_HOST, &devcfg, &spi));
   //Initialize and configure CC1101
-  cc1101_setup(csn, miso, gpi0, gpi2, spi);
-  xTaskCreate(&cc1101_rxtask, "CC1101", 1024*16, rxring, configMAX_PRIORITIES - 1, &rxtask);
+  cc1101_setup(csn, miso, spi, gpi0, gpi2);
+  cc1101_start(ring);
+  //Check interrupts
+  ESP_ERROR_CHECK(esp_intr_dump(NULL));
   //Restart
   for (int i = 0x10000; i > 0; i--) {
-    printf("Restarting in %d seconds...\n", 8*i);
+    ESP_LOGI("idle", "Restarting in %d seconds", 8*i);
     vTaskDelay(8000 / portTICK_PERIOD_MS);
   }
   printf("Restarting now.\n");

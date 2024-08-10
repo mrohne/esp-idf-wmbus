@@ -90,6 +90,16 @@ menu "Wi-Fi Configuration"
 
 endmenu
 
+menu "MQTT Configuration"
+
+    config BROKER_URI
+        string "Broker URI"
+        default "mqtt://mosquitto:mosquitto@homeassistant.local:1883"
+        help
+            URI of the broker to connect to
+
+endmenu
+
 menu "WMBus Meter"
 
     config WMBUS_NAME

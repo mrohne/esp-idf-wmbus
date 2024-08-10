@@ -1,0 +1,19 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:{} arch:headline
+#+options: author:t broken-links:nil c:nil creator:nil
+#+options: d:(not "LOGBOOK") date:t e:t email:nil f:t inline:t num:t
+#+options: p:nil pri:nil prop:nil stat:t tags:t tasks:t tex:t
+#+options: timestamp:t title:t toc:t todo:t |:t
+#+title: README
+#+date: <2024-08-05 Mon>
+#+author: Ole Myren Røhne
+#+email: mrohne@marge.lan
+#+language: en
+#+select_tags: export
+#+exclude_tags: noexport
+#+creator: Emacs 29.3 (Org mode 9.2.4)
+* Breakout module 8-pin header
+  | GND  | VCC  |
+  | GDO0 | CSN  |
+  | SCK  | MOSI |
+  | MISO | GDO2 |
+
